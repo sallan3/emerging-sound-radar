@@ -99,12 +99,18 @@ def fetch_chunk(
 ) -> list[dict]:
     query = build_query(artist_ids)
     for attempt in range(max_retries):
-        response = session.post(
-            SPARQL_URL,
-            data={"query": query},
-            headers={"Accept": "application/sparql-results+json"},
-            timeout=90,
-        )
+        try:
+            response = session.post(
+                SPARQL_URL,
+                data={"query": query},
+                headers={"Accept": "application/sparql-results+json"},
+                timeout=90,
+            )
+        except (requests.ConnectionError, requests.Timeout) as exc:
+            wait = 30 * (attempt + 1)
+            print(f"{type(exc).__name__}, retrying in {wait}s", file=sys.stderr)
+            time.sleep(wait)
+            continue
         if response.status_code == 200:
             return parse_response(response.json())
         if response.status_code in (429, 500, 502, 503, 504):
@@ -116,17 +122,41 @@ def fetch_chunk(
     raise RuntimeError(f"Wikidata query failed after {max_retries} attempts")
 
 
-def build_map(artist_ids: list[int], chunk_size: int = 400, pause: float = 1.0) -> pd.DataFrame:
+COLUMNS = ["discogs_artist_id", "wikidata_qid", "enwiki_title"]
+
+
+def build_map(
+    artist_ids: list[int],
+    chunk_size: int = 400,
+    pause: float = 1.0,
+    cache_dir: Path | None = None,
+) -> pd.DataFrame:
+    """Query Wikidata chunk by chunk. With `cache_dir`, each finished chunk is saved there
+    and skipped on a rerun, so a crash part-way through does not lose earlier work."""
     session = requests.Session()
     session.headers["User-Agent"] = USER_AGENT
-    rows: list[dict] = []
+    if cache_dir is not None:
+        cache_dir.mkdir(parents=True, exist_ok=True)
+    frames: list[pd.DataFrame] = []
     chunks = list(chunked(artist_ids, chunk_size))
+    cached = 0
     for n, chunk in enumerate(chunks, start=1):
-        rows.extend(fetch_chunk(session, chunk))
+        path = cache_dir / f"{chunk[0]}_{chunk[-1]}_{len(chunk)}.parquet" if cache_dir else None
+        if path is not None and path.exists():
+            frames.append(pd.read_parquet(path))
+            cached += 1
+        else:
+            frame = pd.DataFrame(fetch_chunk(session, chunk), columns=COLUMNS)
+            if path is not None:
+                frame.to_parquet(path, index=False)
+            frames.append(frame)
+            time.sleep(pause)
         if n % 25 == 0 or n == len(chunks):
-            print(f"chunk {n}/{len(chunks)}: {len(rows):,} matches", file=sys.stderr)
-        time.sleep(pause)
-    frame = pd.DataFrame(rows, columns=["discogs_artist_id", "wikidata_qid", "enwiki_title"])
+            matches = sum(len(f) for f in frames)
+            print(
+                f"chunk {n}/{len(chunks)} ({cached} cached): {matches:,} matches", file=sys.stderr
+            )
+    frame = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame(columns=COLUMNS)
     # One Discogs ID can map to several Wikidata items (e.g. duplicates); keep the first
     return frame.drop_duplicates("discogs_artist_id").reset_index(drop=True)
 
@@ -137,11 +167,13 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--out", type=Path, default=DEFAULT_OUT)
     parser.add_argument("--min-works", type=int, default=3)
     parser.add_argument("--chunk-size", type=int, default=400)
+    parser.add_argument("--pause", type=float, default=2.0, help="Seconds between queries")
     args = parser.parse_args(argv)
 
     ids = candidate_artist_ids(args.releases, args.min_works)
     print(f"{len(ids):,} candidate artists with >= {args.min_works} works", file=sys.stderr)
-    frame = build_map(ids, args.chunk_size)
+    cache_dir = args.out.parent / "wikidata_chunks"
+    frame = build_map(ids, args.chunk_size, pause=args.pause, cache_dir=cache_dir)
     args.out.parent.mkdir(parents=True, exist_ok=True)
     frame.to_parquet(args.out, index=False)
     print(f"matched {len(frame):,} of {len(ids):,} ({len(frame) / max(len(ids), 1):.1%})")

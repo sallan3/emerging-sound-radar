@@ -180,6 +180,17 @@ from start to offer within a week. The project doubles as case-interview materia
   whether style-article views move with artist-based demand; promote to a feature later only if
   coverage and correlation are good. (Many styles have no article; genre-page views measure
   curiosity more than listening.)
+- Raw dump storage: parse once, then delete. Raw .xml.gz dumps (~11 GB each) are only needed to
+  parse; Discogs archives every monthly dump (CC0), so re-download if the parser changes
+  (~10 min each, no resume, may hit 429). Keep all years in the Parquet output (est. 150-300 MB
+  for all Electronic releases): pre-2000 rows are needed to date reissues by their earliest
+  version and to tell first-time artists and new labels from established ones. Delete a raw
+  dump only after its parse has been checked and Sofia has approved. Parse the Jan 2023 dump
+  to its own Electronic-only Parquet for the lag analysis, then delete it too. If a raw copy is
+  wanted, keep it on an external drive (`DUMP=/Volumes/...`), not on the laptop.
+  Ruled out: iCloud offload (slow, may evict mid-parse), recompressing, a DuckDB file instead
+  of Parquet. Streaming curl straight into the parser is possible for occasional reruns but
+  fragile. A personal S3 bucket for processed Parquet is an option later (AWS is in the role).
 - Work in review checkpoints: after the first run on real data, stop, report, update this file
   and commit before starting multi-hour jobs.
 
@@ -232,12 +243,43 @@ Findings from the first real-data runs (17 Nov 2026, steps 5-6):
   Uwe Schmidt 10). 3,949 ids -> 3,797 articles. Pageviews must be fetched and counted once
   per article, with alias ids pooled for style attribution.
 
+Findings from the full runs (17 Nov 2026, step 7):
+- Full parse of 20261101: 19.5M releases scanned in 12.3 min (26.6k/s), 5,028,288 Electronic
+  kept, 192 MB Parquet, 230 MB peak memory.
+- Date precision, releases dated 2015-2026: day 87.3%, month 3.2%, year 9.5%. Month-or-better
+  rises from 86% (2015) to 92% (2020+). DECISION: quarterly supply.
+- Masters: only ~40% of 2015-2026 releases have a master (31% for 2026); most are standalone
+  (likely digital). 8.6% of 2015-2026 releases are later versions of an existing master.
+- Releases per year peak at 199k (2020), then 180k, 157k, 150k, 136k, 123k (2025) and 78k
+  (2026 so far): cataloguing lag and/or real decline; the Jan 2023 dump will separate them.
+- New works 2015-2026 (master dated by earliest version, or standalone release): 1.39M. Top
+  styles: Experimental 186k, Techno 180k, Ambient 161k, House 149k, Noise 89k, Deep House 83k,
+  Tech House 72k, Electro 66k, Progressive House 60k, Trance 60k, Drum n Bass 57k. Experimental/
+  Ambient/Noise/Drone rank high (Bandcamp and cassette culture); supports focusing the
+  write-up on house/techno and neighbours.
+- Discogs taxonomy gaps: no "Hard Groove", "Afro House", "Melodic Techno", "Organic House" or
+  "Baile Funk" style under Electronic ("Hard Techno" exists, 12.8k releases since 2015; Gqom
+  259; Kuduro 119). The README example rows must use real Discogs styles, and these scenes can
+  only be reached via Last.fm/Beatport tag mapping.
+- Wikidata full run: 253,167 candidates (>= 3 works) -> 24,401 matched (9.6%), 23,828 distinct
+  articles, 66 min (503s, a timeout and a dropped connection, all retried). Of the 173,975
+  candidates active 2015-2026: 9.7% matched. Per style (active 2015-2026): House 13.1% (5,379
+  artists), Techno 6.4% (2,418), Deep House 10.0%, Tech House 7.8%, Minimal Techno 4.7%,
+  Dub Techno 5.6%, Electro 18.2%, Synth-pop 29.5%, Dance-pop 31.6%.
+  Pop-adjacent styles match best and techno-family styles worst: coverage bias to report.
+  Absolute counts are still large: 343 of 686 styles have >= 15 matched artists, 227 have
+  >= 50. Wikipedia demand is usable, but per-style match rate must be shown next to results.
+- Wikidata module now retries connection errors and timeouts and caches each chunk in
+  data/interim/wikidata_chunks/ so a rerun resumes.
+
 To do (Sofia):
 1. Test the Soundcharts sandbox for Beatport chart endpoints and history depth.
 2. Email Songstats about trial API access.
 
 To do (next build steps, in Claude Code):
-7. Full `make discogs` run on the 20261101 dump, then re-run `make wikidata`; re-check date
-   precision and match rates for 2015-2026 releases only; decide quarterly vs annual supply.
+7. DONE (full parse, full Wikidata run, quarterly supply decided; see findings above).
+   Pending: after Sofia approves, delete data/raw/discogs_20261101_releases.xml.gz.
+7b. Parse the 20230101 dump to data/interim/discogs_releases_20230101.parquet for the lag
+   curve; after review and approval, delete the raw dump.
 8. Pageviews ingest for mapped artists + style articles.
 9. Supply and demand panels, labels, momentum baseline.

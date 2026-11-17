@@ -1,6 +1,7 @@
 import pyarrow as pa
 import pyarrow.parquet as pq
 
+from radar.ingest import wikidata
 from radar.ingest.discogs import SCHEMA
 from radar.ingest.wikidata import build_query, candidate_artist_ids, chunked, parse_response
 
@@ -76,3 +77,48 @@ def test_parse_response():
 
 def test_chunked():
     assert list(chunked([1, 2, 3, 4, 5], 2)) == [[1, 2], [3, 4], [5]]
+
+
+def test_build_map_resumes_from_cache(tmp_path, monkeypatch):
+    calls = []
+
+    def fake_fetch(session, chunk, max_retries=5):
+        calls.append(list(chunk))
+        return [
+            {"discogs_artist_id": i, "wikidata_qid": f"Q{i}", "enwiki_title": f"A_{i}"}
+            for i in chunk
+        ]
+
+    monkeypatch.setattr(wikidata, "fetch_chunk", fake_fetch)
+    ids = [1, 2, 3, 4, 5]
+    first = wikidata.build_map(ids, chunk_size=2, pause=0, cache_dir=tmp_path)
+    assert len(calls) == 3 and len(first) == 5
+
+    calls.clear()
+    second = wikidata.build_map(ids, chunk_size=2, pause=0, cache_dir=tmp_path)
+    assert calls == []  # every chunk came from the cache
+    assert second.equals(first)
+
+
+def test_fetch_chunk_retries_connection_errors(monkeypatch):
+    monkeypatch.setattr(wikidata.time, "sleep", lambda s: None)
+
+    class OkResponse:
+        status_code = 200
+        headers = {}
+
+        def json(self):
+            return {"results": {"bindings": []}}
+
+    class FlakySession:
+        attempts = 0
+
+        def post(self, *args, **kwargs):
+            self.attempts += 1
+            if self.attempts == 1:
+                raise wikidata.requests.ConnectionError("dropped")
+            return OkResponse()
+
+    session = FlakySession()
+    assert wikidata.fetch_chunk(session, [1]) == []
+    assert session.attempts == 2

@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+
+# Secrets
+.env
+
+# Data: raw and derived data stay local; only data/sample/ is committed
+data/raw/*
+data/interim/*
+data/processed/*
+!data/*/.gitkeep
+*.xml.gz
+*.duckdb
+*.duckdb.wal
+
+# OS / editor
+.DS_Store

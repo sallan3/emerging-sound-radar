@@ -95,9 +95,31 @@ accuracy check), and test whether Beatport points and Wikipedia pageviews move t
 ## Known pitfalls
 
 1. Discogs cataloguing lag: recent releases are entered late, so recent quarters look smaller.
-   Prefer point-in-time features (use an older monthly dump as-of date t if still available).
+   Old monthly dumps are still downloadable by year, e.g.
+   https://discogs-data-dumps.s3-us-west-2.amazonaws.com/data/2024/discogs_20240701_releases.xml.gz
+   Plan: compare the current dump with one older dump (e.g. Jan 2023) to measure the lag curve
+   (how complete a quarter is N months later) and correct recent quarters, rather than
+   downloading a dump for every vintage.
 2. Wikipedia coverage bias: underground artists often have no article. Report match rate per style.
-3. Dump size: stream-parse, filter early, store as Parquet.
+3. Dump size: stream-parse, filter early, store as Parquet. A full parse of the releases dump
+   (~17M releases in mid-2024) takes on the order of hours; use `--limit` while developing.
+4. Reissue inflation: the same record appears as many releases (pressings, represses, reissues).
+   Supply counts unique masters, dated by the earliest version; releases without a master count
+   on their own. Otherwise a wave of vinyl represses looks like a new scene.
+5. Date precision: many Discogs releases only have a year ("1999" or "1999-00-00"). The parser
+   records precision (day/month/year/none). Measure the share with month precision before
+   committing to quarterly supply; fall back to annual supply features if it is too low.
+6. Artist-to-style attribution for demand: an artist's pageviews are split across styles in
+   proportion to that artist's releases per style in the trailing window (not all-time), so an
+   artist who moves from house to techno moves their attention with them.
+7. Superstar dominance: a few huge artists (filed under House etc.) can swamp a style's summed
+   pageviews, and news spikes (deaths, scandals) distort single quarters. Measure style demand on
+   a log scale (e.g. mean of log1p quarterly views per matched artist, or median per-artist
+   growth) rather than raw sums, and use `agent=user` pageviews only.
+8. Thin styles: set a minimum number of matched artists per style (start at 15) for a style to
+   enter the model; report excluded styles rather than silently dropping them.
+9. Wikidata coverage: the join only queries artists with >= 3 works (`--min-works`). Report the
+   match rate overall and per style; it will be far lower for underground styles.
 
 ## Constraints
 
@@ -110,6 +132,11 @@ accuracy check), and test whether Beatport points and Wikipedia pageviews move t
 
 ## Working conventions
 
+- Build in Claude Code from the repo root (it reads this file automatically, runs on the Mac with
+  the project venv, can run long jobs and commit as sallan3). Use the Claude chat for research
+  (data sources, terms) and writing (README, application note); update this file when either
+  changes the plan.
+- Git identity is set locally in this repo (sallan3, no-reply email); never use --global here.
 - Editor: VS Code. Interpreter is `.venv/bin/python` (see .vscode/settings.json). Ruff formats on save.
 - Commands: `make setup` (venv + install with dev extras), `make lint`, `make format`, `make test`,
   `make sample` (end-to-end on data/sample/, to be implemented).
@@ -141,16 +168,40 @@ accuracy check), and test whether Beatport points and Wikipedia pageviews move t
 Melotech's process: 30-min intro call, 90-min case interview, 90-min founder interview; can move
 from start to offer within a week. The project doubles as case-interview material.
 
+## Decisions
+
+- Scope: all Electronic releases for the model; write-up focused on house/techno and neighbours.
+- Storage: local DuckDB + Parquet (reproducible, no GCP account needed).
+
 ## Open decisions
 
-- Scope: all electronic for the model, write-up focused on house/techno? (leaning yes)
-- Storage: local DuckDB (reproducible, no GCP account needed) vs personal BigQuery? (leaning DuckDB)
 - Timing: apply after weekend 1 with the baseline version, or wait for the full project?
 - Soundcharts: pay for one month after the sandbox check?
 
 ## Next steps
 
+Done:
+- Repo published at github.com/sallan3/emerging-sound-radar (private for now).
+- Plan reviewed 17 Nov 2026 (pitfalls 4-9 added; scope and storage decided).
+- Discogs streaming parser (`src/radar/ingest/discogs.py`): Electronic only, release-level
+  artists only, master_id + is_main_release, date precision, Parquet output. Fixture tests in
+  `tests/test_discogs.py`. Synthetic benchmark: ~30k releases/s scanned, ~260 MB peak memory.
+- Wikidata P1953 join (`src/radar/ingest/wikidata.py`): candidates = artists with >= 3 works
+  (masters, or releases without a master), chunked SPARQL with retries. Offline tests in
+  `tests/test_wikidata.py`. NOT yet run against the live endpoint.
+- Make targets: `make discogs [LIMIT=200000] [DUMP=...]`, `make wikidata [MIN_WORKS=3]`.
+
+To do (Sofia):
 1. Test the Soundcharts sandbox for Beatport chart endpoints and history depth.
 2. Email Songstats about trial API access.
-3. Get a Discogs personal token and a Last.fm API key; download the latest Discogs releases dump.
-4. Write the Discogs streaming parser and the Wikidata P1953 join query.
+3. Get a Discogs personal token and a Last.fm API key into `.env`; set WIKIMEDIA_USER_AGENT
+   with a contact email.
+4. Download the latest releases dump into `data/raw/`.
+
+To do (next build steps, in Claude Code):
+5. `make discogs LIMIT=200000`; check the parquet: share of rows by date_precision, share with a
+   master_id, top styles. Fix the parser if the real dump differs from the fixture.
+6. `make wikidata MIN_WORKS=20` as a quick live check, then the full run; record match rate.
+7. Full `make discogs` run; decide quarterly vs annual supply from date precision.
+8. Pageviews ingest for mapped artists + style articles.
+9. Supply and demand panels, labels, momentum baseline.

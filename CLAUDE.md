@@ -96,7 +96,10 @@ accuracy check), and test whether Beatport points and Wikipedia pageviews move t
 
 1. Discogs cataloguing lag: recent releases are entered late, so recent quarters look smaller.
    Old monthly dumps are still downloadable by year, e.g.
-   https://discogs-data-dumps.s3-us-west-2.amazonaws.com/data/2024/discogs_20240701_releases.xml.gz
+   https://data.discogs.com/?download=data%2F2024%2Fdiscogs_20240701_releases.xml.gz
+   (the old discogs-data-dumps.s3 URLs return 403 as of Nov 2026). data.discogs.com is behind
+   Cloudflare: it returns 429 with a ~20 min Retry-After after a burst of requests, and ignores
+   Range headers, so interrupted downloads restart from zero.
    Plan: compare the current dump with one older dump (e.g. Jan 2023) to measure the lag curve
    (how complete a quarter is N months later) and correct recent quarters, rather than
    downloading a dump for every vintage.
@@ -172,6 +175,13 @@ from start to offer within a week. The project doubles as case-interview materia
 
 - Scope: all Electronic releases for the model; write-up focused on house/techno and neighbours.
 - Storage: local DuckDB + Parquet (reproducible, no GCP account needed).
+- Style-article pageviews (e.g. the "Hard groove" Wikipedia page): cross-check only. Demand and
+  the target use artist pageviews only. Report how many styles have a matching article and
+  whether style-article views move with artist-based demand; promote to a feature later only if
+  coverage and correlation are good. (Many styles have no article; genre-page views measure
+  curiosity more than listening.)
+- Work in review checkpoints: after the first run on real data, stop, report, update this file
+  and commit before starting multi-hour jobs.
 
 ## Open decisions
 
@@ -189,19 +199,45 @@ Done:
 - Wikidata P1953 join (`src/radar/ingest/wikidata.py`): candidates = artists with >= 3 works
   (masters, or releases without a master), chunked SPARQL with retries. Offline tests in
   `tests/test_wikidata.py`. NOT yet run against the live endpoint.
-- Make targets: `make discogs [LIMIT=200000] [DUMP=...]`, `make wikidata [MIN_WORKS=3]`.
+- Make targets: `make discogs [LIMIT=200000] [DUMP=...]` (DUMP defaults to the latest dump in
+  data/raw), `make wikidata [MIN_WORKS=3]`.
+- Keys in `.env`: Discogs token, Last.fm key, Wikimedia user agent, Soundcharts sandbox.
+- Dumps in data/raw (17 Nov 2026, both gzip-verified): discogs_20261101_releases.xml.gz
+  (11.4 GB) and discogs_20230101_releases.xml.gz (11.6 GB, for the lag curve).
+
+Findings from the first real-data runs (17 Nov 2026, steps 5-6):
+- Sample = first 200k Electronic releases of the 20261101 dump. The dump is ordered by
+  release_id, so this sample is release ids 1-213k, almost all released 1985-2005: nothing in
+  the 2015-2026 window. Shares below describe old catalogue, not the analysis window.
+- Real dump vs fixture: (a) releases without a master have `<master_id>0</master_id>`, not a
+  missing tag; the parser stored 0, which would merge ~20% of releases into one "work".
+  Fixed (0 -> None) with a test. (b) No `status` attribute on releases, so `status` is all
+  null. (c) Each release has `data_quality` (e.g. "Correct"), not parsed yet.
+- Parse speed: 200k Electronic releases in 10 s, 240 MB peak memory. Early ids are almost all
+  Electronic, so the full-dump rate is still unknown; expect tens of minutes, not hours.
+- Sample date precision: year 66.0%, day 23.0%, month 9.7%, none 1.3% (month-or-better 33%).
+  Month share rises over time (23% for 1990-94, 45% for 2000-04). Quarterly vs annual cannot be
+  decided until the full parse covers 2015-2026.
+- Sample masters: 79.4% of releases have a master; 44.5% are the main release; 107,767
+  distinct masters. 8.2% are credited to "Various" (artist 194). Styles missing on 0.04%.
+- Top sample styles by works (master, or release without one): House 36.0k, Techno 32.4k,
+  Trance 16.2k, Deep House 12.6k, Electro 10.9k, Downtempo 10.4k, Hardcore 9.8k,
+  Experimental 9.6k, Breakbeat 9.4k, Drum n Bass 9.3k (period-skewed: 1990s-heavy).
+- Wikidata live check works (MIN_WORKS=20: 433 of 693 = 62.5%, 11 s). Full sample run
+  (MIN_WORKS=3): 3,949 of 14,432 candidates = 27.4% in 3.3 min (one 429, honoured
+  Retry-After). Per style: House 34%, Techno 23%, Deep House 31%, Tech House 26%,
+  Acid 21%, Hard Trance 19%, Hardcore 16%; Downtempo/Disco/Electro/Ambient 46-54%.
+  Underground dance styles match worst, as expected. Usable but thin for techno.
+- Aliases: several Discogs artist ids map to the same article (Wolfgang Voigt 15 ids,
+  Uwe Schmidt 10). 3,949 ids -> 3,797 articles. Pageviews must be fetched and counted once
+  per article, with alias ids pooled for style attribution.
 
 To do (Sofia):
 1. Test the Soundcharts sandbox for Beatport chart endpoints and history depth.
 2. Email Songstats about trial API access.
-3. Get a Discogs personal token and a Last.fm API key into `.env`; set WIKIMEDIA_USER_AGENT
-   with a contact email.
-4. Download the latest releases dump into `data/raw/`.
 
 To do (next build steps, in Claude Code):
-5. `make discogs LIMIT=200000`; check the parquet: share of rows by date_precision, share with a
-   master_id, top styles. Fix the parser if the real dump differs from the fixture.
-6. `make wikidata MIN_WORKS=20` as a quick live check, then the full run; record match rate.
-7. Full `make discogs` run; decide quarterly vs annual supply from date precision.
+7. Full `make discogs` run on the 20261101 dump, then re-run `make wikidata`; re-check date
+   precision and match rates for 2015-2026 releases only; decide quarterly vs annual supply.
 8. Pageviews ingest for mapped artists + style articles.
 9. Supply and demand panels, labels, momentum baseline.

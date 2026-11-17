@@ -95,7 +95,10 @@ def parse_release(elem: etree._Element, genre: str = TARGET_GENRE) -> dict | Non
 
     master = elem.find("master_id")
     master_id = _to_int(master.text) if master is not None else None
-    is_main = master is not None and master.get("is_main_release") == "true"
+    # The real dump writes <master_id>0</master_id> for releases without a master
+    if master_id == 0:
+        master_id = None
+    is_main = master_id is not None and master.get("is_main_release") == "true"
 
     released_raw = _text(elem, "released")
     year, month, precision = parse_released(released_raw)

@@ -2,8 +2,9 @@ import gzip
 
 import pyarrow.parquet as pq
 import pytest
+from lxml import etree
 
-from radar.ingest.discogs import iter_releases, parse_released, write_parquet
+from radar.ingest.discogs import iter_releases, parse_release, parse_released, write_parquet
 
 # Shape follows the Discogs releases dump: release-level artists, a tracklist with its own
 # track-level artists, labels as attributes, master_id with is_main_release.
@@ -118,6 +119,17 @@ def test_missing_master_label_id_and_date(dump):
     assert undated["label_ids"] == []
     assert undated["label_names"] == ["White Label"]
     assert undated["date_precision"] == "none"
+
+
+def test_master_id_zero_means_no_master():
+    # The real dump writes <master_id>0</master_id> instead of omitting the tag
+    elem = etree.fromstring(
+        b'<release id="9"><genres><genre>Electronic</genre></genres>'
+        b'<master_id is_main_release="false">0</master_id></release>'
+    )
+    row = parse_release(elem)
+    assert row["master_id"] is None
+    assert row["is_main_release"] is False
 
 
 def test_limit_counts_matching_releases(dump):
